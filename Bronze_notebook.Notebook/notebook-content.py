@@ -36,7 +36,7 @@
 # ##### steps
 #     > clean the dataset
 #     > statistical test
-#     > encode
+#     > stratify test
 #     > Split the data (There is another dataset to test but split this for training and validation)
 #     > deal with the imbalance dataset 
 #     > normalize / scale 
@@ -47,16 +47,17 @@
 # CELL ********************
 
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from IPython.display import Image, display
-import pyspark
-from pyspark.sql.types import *
-from pyspark.sql import functions as f
-from scipy import stats
-import itertools
 import seaborn as sns
-from sklearn.decomposition import PCA
+from scipy import stats
+from scipy.stats import chi2_contingency
+import itertools
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
 #from prince import FAMD
+
 
 # METADATA ********************
 
@@ -227,8 +228,8 @@ p_df.describe().round(2)
 
 # Find the unique categories in the target variable (it is a binary)
 
-p_df.y.unique()
-p_df['y'] = p_df['y'].map({'no':0, 'yes':1})# Encode the targeted variable
+#p_df.y.unique()
+#p_df['y'] = p_df['y'].map({'no':0, 'yes':1})# Encode the targeted variable
 
 
 # Select the category and numerical columns and save them in a df
@@ -414,6 +415,14 @@ num_train_spark.write.format('delta').mode('overwrite').save('abfss://project1_b
 
 # ##### Categorical columns
 
+# MARKDOWN ********************
+
+# ##### Steps to analyze the categorical variables
+#     1. Get the unique categories 
+#     2. Group and Sum them up by category
+#     3. Test for independence using chi square test - between the independent variables and the target variable
+#     4. Stratified sampling from each categories
+
 # CELL ********************
 
 # visualize the unique categories in each column, count the values in each category
@@ -439,6 +448,504 @@ for col in cat_col_df:
 
 # CELL ********************
 
+y_yes = cat_col_df.loc[p_df['y']=='yes']
+y_yes
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+y_no = cat_col_df.loc[p_df['y']=='no']
+y_no
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+col_names = cat_col_df.columns.tolist()[:-1]
+target_col = cat_col_df.columns.tolist()[-1]
+target_col
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+def count_cat(df,colname, target_column):
+    result = pd.crosstab(df[colname], df[target_column])
+    return result
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+def dependent_or_not(df, col_name, target_col, p_value):
+    if p_value <= 0.05:
+        print(f'P value: {round(p_value,4)}')
+        print(" ")
+        print(f'{col_name[0]} and {df.target_col} are significantly related')
+    else:
+        print(f"{df.col_name} and {df.target_col} are independent")
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+### counts of the actual observed outcome of each categorical columns
+
+
+job_count = count_cat(cat_col_df,col_names[0], 'y')
+marital_count = count_cat(cat_col_df,col_names[1], 'y')
+education_count = count_cat(cat_col_df,col_names[2], 'y')
+default_count = count_cat(cat_col_df,col_names[3], 'y')
+housing_count = count_cat(cat_col_df,col_names[4], 'y')
+loan_count = count_cat(cat_col_df,col_names[5], 'y')
+contact_count = count_cat(cat_col_df,col_names[6], 'y')
+month_count_count = count_cat(cat_col_df,col_names[7], 'y')
+day_of_week_count = count_cat(cat_col_df,col_names[8], 'y')
+poutcome_count = count_cat(cat_col_df,col_names[9], 'y')
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+month_count_count # month variable can affect the model so use this col to statify
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+poutcome_count
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+def get_chi_pvalues(df, indep_cols, target):
+    p_value_dict = dict()
+    for col in indep_cols:
+        # contingency table
+        ct = pd.crosstab(df[col], df[target])
+
+        # chi-square
+        chi2, p_value, dof, expected = chi2_contingency(ct)
+
+        #save in dict
+        p_value_dict[col]= p_value
+    return p_value_dict
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+#convert the dict to df
+p_dict = get_chi_pvalues(cat_col_df, col_names, target_col) 
+#p_df = pd.DataFrame.from_dict(p_dict, orient='index', columns=["p_value"])
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# create a df
+p_value_df = pd.DataFrame.from_dict(p_dict, orient='index', columns=['p_value'])
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+p_value_df['-log10_p'] = -np.log10(p_value_df['p_value'] + 1e-300)
+p_value_df
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# plot a heatmap
+
+plt.figure(figsize=(5,8))
+sns.heatmap(
+        p_value_df[['-log10_p']],
+        annot=p_value_df[['p_value']],
+        fmt='.4f',
+        cmap='Blues',
+        cbar_kws={'label': '-log10(p_value)'}    
+        )
+plt.title('Variables Significace Heatmap')
+plt.show()
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# MARKDOWN ********************
+
+# #### Model training preparation
+
+
+# CELL ********************
+
+# combine the numerical and categroical dfs
+
+df_num = spark.read.format('delta').load('abfss://project1_bank_market@onelake.dfs.fabric.microsoft.com/project1_lakehouse.Lakehouse/Tables/dbo/num_table_train')
+df_num_train = df_num.toPandas()
+df_num_train
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# add the categorical variables excluding the target
+
+df_model = pd.concat([df_num_train, cat_col_df.drop(['y'], axis=1)], axis=1)
+df_model
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# Split the data for validation and training
+
+# Combined key
+df_model['stratify_key']=df_model['month'].astype(str) + "_" + df_model['y'].astype(str)
+
+# Split the data with the composite key
+train_df, val_df = train_test_split(df_model, test_size=0.2, stratify=df_model['stratify_key'], random_state=42)
+
+train_df = train_df.drop(columns=['stratify_key'])
+val_df = val_df.drop(columns=['stratify_key'])
+
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# upsampling the training data
+
+# group by month and target column and find the highest class and up sample the lowest class to match
+
+target_count = train_df.groupby(['month','y']).size()
+max_per_month = target_count.groupby('month').max()
+
+# Resample each target group 
+df_train = train_df.groupby(['month', 'y'], group_keys=False).apply(
+     lambda group: group.sample(max_per_month[group.name[0]], replace=True)
+)
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+df_train
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# X and y for the train and val 
+
+X_train = df_train.drop('y', axis=1)
+y_train = df_train['y']
+
+X_val = val_df.drop('y', axis=1)
+y_val = val_df['y']
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# # Min max normalization for the numeric columns - preserve the original distribution
+# column names
+nums_col = X_train.select_dtypes(include=[int, float]).columns.to_list()
+
+scaler = MinMaxScaler()
+
+# X_train
+X_train[nums_col] = scaler.fit_transform(X_train[nums_col])
+
+# X_val
+X_val[nums_col] = scaler.fit_transform(X_val[nums_col])
+
+X_train.head(5)
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# Hotencode the categorical variables 
+# Isolate columns
+hot_col_cat = X_train.select_dtypes(include=object).columns.to_list()
+col_num = X_train.select_dtypes(include=[int,float]).columns.to_list()
+
+
+
+cat_encoder = OneHotEncoder(sparse_output=False, drop='first').set_output(transform="pandas")
+
+# encode X_train 
+X_train_enc = cat_encoder.fit_transform(X_train[hot_col_cat])
+
+#encode X_val
+X_val_enc = cat_encoder.fit_transform(X_val[hot_col_cat])
+
+
+# combaine the numerical and categorical cols
+
+X_train_final = pd.concat([X_train[col_num],X_train_enc], axis=1)
+
+X_val_final = pd.concat([X_val[col_num], X_val_enc], axis=1)
+
+
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# Save the files 
+# X_train_final and y_train
+
+X_train_final.write.format('delta').option('overwriteSchema', 'false').saveAsTable('X_train_final')
+y_train.write.format('delta').option('overwriteSchema', 'false').saveAsTable('y_train')
+
+# X_val_final and y_val
+X_val_final.write.format('delta').option('overwriteSchema', 'false').saveAsTable('X_val_final')
+y_val.write.format('delta').option('overwriteSchema', 'false').saveAsTable('y_val')
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+y_val
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+#get the numeric columns
+X_train_num = X_train[col_num].to_numpy()
+X_val_num = X_val[col_num].to_numpy()
+
+#Combine numeric array and encoded array 
+X_train_final = np.hstack((X_train_num, X_train_enc))
+
+X_val_final = np.hstack((X_val_num, X_val_enc))
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+X_val_final
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# MARKDOWN ********************
+
+
+# CELL ********************
+
+job_col = dependent_or_not(p_value )
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+p_value.round(2),expected.round(0)
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+job_count.insert(2,'expected_no', expected[:,:-1].round(0))
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+job_count.insert(2,'expected_yes', expected[:,1:].round(0))
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+job_count = job_count[['no','expected_no', 'yes', 'expected_yes']]
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+job_count
 
 # METADATA ********************
 
